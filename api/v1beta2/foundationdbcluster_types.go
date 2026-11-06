@@ -1453,7 +1453,13 @@ type TaintReplacementOption struct {
 	// +kubebuilder:validation:Minimum=0
 	DurationInSeconds *int64 `json:"durationInSeconds,omitempty"`
 
-	// ProcessClasses restricts this option to the listed process classes.
+	// MatchNodeLabels also treats the presence of a node label with Key as a taint.
+	// Label values are ignored. Key matches an exact label key or "*" for any label, as for taints.
+	// Labels use the same detection and replacement delays as taints, starting when observed.
+	// Set --cluster-label-key-for-node-trigger to enable prompt node-event reconciliation.
+	MatchNodeLabels bool `json:"matchNodeLabels,omitempty"`
+
+	// ProcessClasses restricts this option to the listed process classes, for both taints and labels.
 	// Omitted or empty means all classes.
 	// +listType=set
 	ProcessClasses []ProcessClass `json:"processClasses,omitempty"`

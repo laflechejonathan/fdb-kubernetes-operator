@@ -25,7 +25,12 @@ type TaintReplacementOptionApplyConfiguration struct {
 	// The tainted key must be present for DurationInSeconds before operator replaces pods on the node with this taint;
 	// DurationInSeconds cannot be a negative number.
 	DurationInSeconds *int64 `json:"durationInSeconds,omitempty"`
-	// ProcessClasses restricts this option to the listed process classes.
+	// MatchNodeLabels also treats the presence of a node label with Key as a taint.
+	// Label values are ignored. Key matches an exact label key or "*" for any label, as for taints.
+	// Labels use the same detection and replacement delays as taints, starting when observed.
+	// Set --cluster-label-key-for-node-trigger to enable prompt node-event reconciliation.
+	MatchNodeLabels *bool `json:"matchNodeLabels,omitempty"`
+	// ProcessClasses restricts this option to the listed process classes, for both taints and labels.
 	// Omitted or empty means all classes.
 	ProcessClasses []apiv1beta2.ProcessClass `json:"processClasses,omitempty"`
 }
@@ -49,6 +54,14 @@ func (b *TaintReplacementOptionApplyConfiguration) WithKey(value string) *TaintR
 // If called multiple times, the DurationInSeconds field is set to the value of the last call.
 func (b *TaintReplacementOptionApplyConfiguration) WithDurationInSeconds(value int64) *TaintReplacementOptionApplyConfiguration {
 	b.DurationInSeconds = &value
+	return b
+}
+
+// WithMatchNodeLabels sets the MatchNodeLabels field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the MatchNodeLabels field is set to the value of the last call.
+func (b *TaintReplacementOptionApplyConfiguration) WithMatchNodeLabels(value bool) *TaintReplacementOptionApplyConfiguration {
+	b.MatchNodeLabels = &value
 	return b
 }
 

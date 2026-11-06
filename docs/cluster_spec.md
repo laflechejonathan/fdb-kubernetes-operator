@@ -504,7 +504,8 @@ TaintReplacementOption defines the taint key and taint duration the operator wil
 | ----- | ----------- | ------ | -------- |
 | key | Tainted key | *string | false |
 | durationInSeconds | The tainted key must be present for DurationInSeconds before operator replaces pods on the node with this taint; DurationInSeconds cannot be a negative number. | *int64 | false |
-| processClasses | ProcessClasses restricts this option to the listed process classes. Omitted or empty means all classes. | [][ProcessClass](#processclass) | false |
+| matchNodeLabels | MatchNodeLabels also treats the presence of a node label with Key as a taint. Label values are ignored. Key matches an exact label key or \"*\" for any label, as for taints. Labels use the same detection and replacement delays as taints, starting when observed. Set --cluster-label-key-for-node-trigger to enable prompt node-event reconciliation. | bool | false |
+| processClasses | ProcessClasses restricts this option to the listed process classes, for both taints and labels. Omitted or empty means all classes. | [][ProcessClass](#processclass) | false |
 
 [Back to TOC](#table-of-contents)
 

@@ -30,8 +30,7 @@ import (
 
 var _ predicate.Predicate = (*NodeTaintChangedPredicate)(nil)
 
-// NodeTaintChangedPredicate filters events before enqueuing the keys. Only if the node taints have changed
-// a reconciliation will be triggered.
+// NodeTaintChangedPredicate enqueues changes to node taints or labels.
 type NodeTaintChangedPredicate struct {
 	Logger logr.Logger
 }
@@ -46,8 +45,7 @@ func (n NodeTaintChangedPredicate) Delete(_ event.DeleteEvent) bool {
 	return false
 }
 
-// Update returns true if the Update event should be processed. This is the case if the taints for the provided
-// node has been changed.
+// Update returns true when taints or label keys have changed; label values are ignored.
 func (n NodeTaintChangedPredicate) Update(event event.UpdateEvent) bool {
 	if event.ObjectOld == nil || event.ObjectNew == nil {
 		return false
@@ -69,7 +67,15 @@ func (n NodeTaintChangedPredicate) Update(event event.UpdateEvent) bool {
 			Info("Node taints have changed", "node", oldNode.Name, "taintsChanged", taintsChanged, "oldTaints", oldNode.Spec.Taints, "newTaints", newNode.Spec.Taints)
 	}
 
-	return taintsChanged
+	if taintsChanged || len(oldNode.Labels) != len(newNode.Labels) {
+		return true
+	}
+	for key := range oldNode.Labels {
+		if _, present := newNode.Labels[key]; !present {
+			return true
+		}
+	}
+	return false
 }
 
 // Generic implements Predicate.

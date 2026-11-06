@@ -42,6 +42,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -933,7 +934,7 @@ func validateProcessGroup(
 	return nil
 }
 
-// updateTaintCondition checks pod's node taint label and update pod's taint-related condition accordingly
+// updateTaintCondition updates taint conditions from real taints and opted-in node labels.
 func updateTaintCondition(
 	ctx context.Context,
 	r *FoundationDBClusterReconciler,
@@ -954,8 +955,8 @@ func updateTaintCondition(
 	}
 
 	// Check the tainted duration and only mark the process group tainted after the configured tainted duration
-	if !checkIfNodeHasTaintsAndUpdateConditions(logger, node.Spec.Taints, cluster, processGroup) {
-		// Remove NodeTaintDetected condition if the pod is no longer on a tainted node.
+	if !checkIfNodeHasTaintsAndUpdateConditions(logger, node, cluster, processGroup) {
+		// Clear conditions only when neither a taint nor an opted-in label matches this class.
 		processGroup.UpdateCondition(fdbv1beta2.NodeTaintDetected, false)
 		processGroup.UpdateCondition(fdbv1beta2.NodeTaintReplacing, false)
 	}
@@ -965,40 +966,70 @@ func updateTaintCondition(
 
 func checkIfNodeHasTaintsAndUpdateConditions(
 	logger logr.Logger,
-	taints []corev1.Taint,
+	node *corev1.Node,
 	cluster *fdbv1beta2.FoundationDBCluster,
 	processGroup *fdbv1beta2.ProcessGroupStatus,
 ) bool {
 	hasMatchingTaint := false
 
-	for _, taint := range taints {
+	type signalKind string
+	const (
+		labelSignal signalKind = "Label"
+		taintSignal signalKind = "Taint"
+	)
+	type signal struct {
+		kind      signalKind
+		key       string
+		value     string
+		effect    corev1.TaintEffect
+		timeAdded *metav1.Time
+	}
+
+	// Collect node signals independently of replacement policy. Only taints have
+	// an effect and an optional timestamp; labels are matched by key presence.
+	signals := make([]signal, 0, len(node.Spec.Taints)+len(node.Labels))
+	for _, taint := range node.Spec.Taints {
+		signals = append(signals, signal{
+			kind: taintSignal, key: taint.Key, value: taint.Value,
+			effect: taint.Effect, timeAdded: taint.TimeAdded,
+		})
+	}
+	for key, value := range node.Labels {
+		signals = append(signals, signal{kind: labelSignal, key: key, value: value})
+	}
+
+	// Apply replacement policy to the collected signals.
+	for _, candidate := range signals {
 		hasExactMatch := hasExactMatchedTaintKey(
 			cluster.Spec.AutomationOptions.Replacements.TaintReplacementOptions,
-			taint.Key,
+			candidate.key,
 			processGroup.ProcessClass,
 		)
-		for _, taintConfiguredKey := range cluster.Spec.AutomationOptions.Replacements.TaintReplacementOptions {
-			taintConfiguredKeyString := ptr.Deref(taintConfiguredKey.Key, "")
-			if taintConfiguredKeyString == "" ||
-				ptr.Deref(taintConfiguredKey.DurationInSeconds, math.MinInt64) < 0 {
-				logger.Info("Cluster's TaintReplacementOption is disabled",
-					"Key", taintConfiguredKey.Key,
-					"DurationInSeconds", taintConfiguredKey.DurationInSeconds)
+		for _, option := range cluster.Spec.AutomationOptions.Replacements.TaintReplacementOptions {
+			if candidate.kind == labelSignal && !option.MatchNodeLabels {
 				continue
 			}
-			if taint.Key == "" {
-				// Node's taint is not properly set, skip the node's taint
-				logger.Info("Taint is not properly set", "Taint", taint)
+			optionKey := ptr.Deref(option.Key, "")
+			if optionKey == "" ||
+				ptr.Deref(option.DurationInSeconds, math.MinInt64) < 0 {
+				logger.Info("Cluster's TaintReplacementOption is disabled",
+					"Key", option.Key,
+					"DurationInSeconds", option.DurationInSeconds)
+				continue
+			}
+			if candidate.key == "" {
+				// Ignore malformed node signals.
+				logger.Info("Node signal has an empty key", "Signal", candidate)
 				continue
 			}
 			// Use the wildcard as the default unless an exact key matches this process class.
-			if (hasExactMatch && taint.Key != taintConfiguredKeyString) ||
-				(!hasExactMatch && taintConfiguredKeyString != "*") {
+			if (hasExactMatch && candidate.key != optionKey) ||
+				(!hasExactMatch && optionKey != "*") {
 				continue
 			}
 
-			if len(taintConfiguredKey.ProcessClasses) > 0 &&
-				!slices.Contains(taintConfiguredKey.ProcessClasses, processGroup.ProcessClass) {
+			if len(option.ProcessClasses) > 0 &&
+				!slices.Contains(option.ProcessClasses, processGroup.ProcessClass) {
 				continue
 			}
 
@@ -1007,27 +1038,30 @@ func checkIfNodeHasTaintsAndUpdateConditions(
 			if nodeTaintDetectedTime == nil {
 				processGroup.UpdateCondition(fdbv1beta2.NodeTaintDetected, true)
 				logger.Info("Add NodeTaintDetected condition",
-					"TaintKey", taint.Key,
-					"TaintValue", taint.Value,
-					"TaintEffect", taint.Effect)
+					"TaintKey", candidate.key,
+					"NodeLabel", candidate.kind == labelSignal,
+					"TaintValue", candidate.value,
+					"TaintEffect", candidate.effect)
 				// Update nodeTaintDetectedTime here to make sure we are not hitting a nil pointer below.
 				nodeTaintDetectedTime = new(time.Now().Unix())
 			}
 
 			// Use node taint's timestamp as the NodeTaintDetected condition's starting time.
-			if !taint.TimeAdded.IsZero() && taint.TimeAdded.Time.Unix() < *nodeTaintDetectedTime {
+			if !candidate.timeAdded.IsZero() &&
+				candidate.timeAdded.Time.Unix() < *nodeTaintDetectedTime {
 				logger.Info("Update NodeTaintDetected condition",
-					"TaintKey", taint.Key,
-					"TaintValue", taint.Value,
-					"TaintEffect", taint.Effect,
+					"TaintKey", candidate.key,
+					"NodeLabel", candidate.kind == labelSignal,
+					"TaintValue", candidate.value,
+					"TaintEffect", candidate.effect,
 					"oldNodeTaintDetectedTime", time.Unix(*nodeTaintDetectedTime, 0).String(),
-					"newNodeTaintDetectedTime", taint.TimeAdded.String())
+					"newNodeTaintDetectedTime", candidate.timeAdded.String())
 				processGroup.UpdateConditionTime(
 					fdbv1beta2.NodeTaintDetected,
-					taint.TimeAdded.Unix(),
+					candidate.timeAdded.Unix(),
 				)
 				// Update the current timestamp with the new value.
-				nodeTaintDetectedTime = new(taint.TimeAdded.Unix())
+				nodeTaintDetectedTime = new(candidate.timeAdded.Unix())
 			}
 
 			// If the process group already has the NodeTaintReplacing condition we can skip any further work.
@@ -1040,7 +1074,7 @@ func checkIfNodeHasTaintsAndUpdateConditions(
 			if time.Now().
 				Unix()-
 				taintDetectedTimestamp > ptr.Deref(
-				taintConfiguredKey.DurationInSeconds,
+				option.DurationInSeconds,
 				math.MaxInt64,
 			) {
 				taintDetectedTime := time.Unix(taintDetectedTimestamp, 0)
@@ -1048,17 +1082,17 @@ func checkIfNodeHasTaintsAndUpdateConditions(
 				logger.Info(
 					"Add NodeTaintReplacing condition",
 					"TaintKey",
-					taint.Key,
+					candidate.key,
 					"TaintDetectedTime",
 					taintDetectedTime.String(),
 					"TaintDuration",
 					time.Since(taintDetectedTime).String(),
 					"TaintValue",
-					taint.Value,
+					candidate.value,
 					"TaintEffect",
-					taint.Effect,
+					candidate.effect,
 					"ClusterTaintDetectionDuration",
-					(time.Duration(ptr.Deref(taintConfiguredKey.DurationInSeconds, math.MaxInt64)) * time.Second).String(),
+					(time.Duration(ptr.Deref(option.DurationInSeconds, math.MaxInt64)) * time.Second).String(),
 				)
 			}
 		}

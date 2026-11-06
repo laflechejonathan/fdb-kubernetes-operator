@@ -152,6 +152,8 @@ spec:
                               maxLength: 256
                               pattern: ^([\-._\/a-z0-9A-Z\*])*$
                               type: string
+                            matchNodeLabels:
+                              type: boolean
                             processClasses:
                               items:
                                 type: string
